@@ -204,12 +204,12 @@ class Medgan(object):
         burn_in = 1000
         with tf.Session() as sess:
             saver.restore(sess, modelFile)
-            print 'burning in'
+            print('burning in')
             for i in range(burn_in):
                 randomX = np.random.normal(size=(batchSize, self.randomDim))
                 output = sess.run(x_reconst, feed_dict={x_random:randomX, bn_train:True})
 
-            print 'generating'
+            print('generating')
             nBatches = int(np.ceil(float(nSamples)) / float(batchSize))
             for i in range(nBatches):
                 randomX = np.random.normal(size=(batchSize, self.randomDim))
@@ -265,7 +265,8 @@ class Medgan(object):
 
         optimize_ae = tf.train.AdamOptimizer().minimize(loss_ae + sum(all_regs), var_list=ae_vars)
         optimize_d = tf.train.AdamOptimizer().minimize(loss_d + sum(all_regs), var_list=d_vars)
-        optimize_g = tf.train.AdamOptimizer().minimize(loss_g + sum(all_regs), var_list=g_vars+decodeVariables.values())
+        # list(decodeVariables.values()) is used to create a list to be concatenated with g_vars list.
+        optimize_g = tf.train.AdamOptimizer().minimize(loss_g + sum(all_regs), var_list=g_vars+list(decodeVariables.values()))
 
         initOp = tf.global_variables_initializer()
 
@@ -295,7 +296,7 @@ class Medgan(object):
                         validLossVec.append(loss)
                     validReverseLoss = 0.
                     buf = 'Pretrain_Epoch:%d, trainLoss:%f, validLoss:%f, validReverseLoss:%f' % (epoch, np.mean(trainLossVec), np.mean(validLossVec), validReverseLoss)
-                    print buf
+                    print(buf)
                     self.print2file(buf, logFile)
 
             idx = np.arange(trainX.shape[0])
@@ -328,10 +329,18 @@ class Medgan(object):
                     validAccVec.append(validAcc)
                     validAucVec.append(validAuc)
                 buf = 'Epoch:%d, d_loss:%f, g_loss:%f, accuracy:%f, AUC:%f' % (epoch, np.mean(d_loss_vec), np.mean(g_loss_vec), np.mean(validAccVec), np.mean(validAucVec))
-                print buf
+                print(buf)
                 self.print2file(buf, logFile)
+
+                # Path checking
+                import os
+                try:
+                    os.stat(outPath)
+                except:
+                    os.mkdir(outPath)
+
                 savePath = saver.save(sess, outPath, global_step=epoch)
-        print  savePath
+        print(savePath)
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -352,8 +361,9 @@ def parse_arguments(parser):
     parser.add_argument('--batchnorm_decay', type=float, default=0.99, help='Decay value for the moving average used in Batch Normalization. (default value: 0.99)')
     parser.add_argument('--L2', type=float, default=0.001, help='L2 regularization coefficient for all weights. (default value: 0.001)')
 
-    parser.add_argument('data_file', type=str, metavar='<patient_matrix>', help='The path to the numpy matrix containing aggregated patient records.')
-    parser.add_argument('out_file', type=str, metavar='<out_file>', help='The path to the output models.')
+    import os
+    parser.add_argument('--data_file', type=str, metavar='<patient_matrix>', default=os.path.expanduser('~/data/PhisioNet/MIMIC/processed/out_binary.matrix'), help='The path to the numpy matrix containing aggregated patient records.')
+    parser.add_argument('--out_file', type=str, metavar='<out_file>', default=os.path.expanduser('~/medgan/out_gan_binary'), help='The path to the output models.')
     parser.add_argument('--model_file', type=str, metavar='<model_file>', default='', help='The path to the model file, in case you want to continue training. (default value: '')')
     parser.add_argument('--n_pretrain_epoch', type=int, default=100, help='The number of epochs to pre-train the autoencoder. (default value: 100)')
     parser.add_argument('--n_epoch', type=int, default=1000, help='The number of epochs to train medGAN. (default value: 1000)')
