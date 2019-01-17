@@ -94,8 +94,9 @@ class Medgan(object):
                 h = tf.matmul(tempVec,W)
                 h2 = batch_norm(h, decay=self.bnDecay, scale=True, is_training=bn_train, updates_collections=None)
                 h3 = self.generatorActivation(h2)
-                tempVec = h3 + tempVec
+                tempVec = h3 + tempVec # Shortcut connection
                 tempDim = genDim
+            # There is no shortcut connection in the last layer
             W = tf.get_variable('W'+str(i), shape=[tempDim, self.generatorDims[-1]])
             h = tf.matmul(tempVec,W)
             h2 = batch_norm(h, decay=self.bnDecay, scale=True, is_training=bn_train, updates_collections=None)
@@ -246,11 +247,15 @@ class Medgan(object):
               batchSize=1000,
               pretrainEpochs=100,
               saveMaxKeep=0):
-        x_raw = tf.placeholder('float', [None, self.inputDim])
-        x_random= tf.placeholder('float', [None, self.randomDim])
+
+        # placeholders
+        x_raw = tf.placeholder('float', [None, self.inputDim])  # Place holder for real input data
+        x_random= tf.placeholder('float', [None, self.randomDim])   # place holder for random noise
         keep_prob = tf.placeholder('float')
         bn_train = tf.placeholder('bool')
 
+        # Buiding autoencoder and generators
+        # Autoencoder task: Variable transformation of discrete->continuous->discrete
         loss_ae, decodeVariables = self.buildAutoencoder(x_raw)
         x_fake = self.buildGenerator(x_random, bn_train)
         loss_d, loss_g, y_hat_real, y_hat_fake = self.buildDiscriminator(x_raw, x_fake, keep_prob, decodeVariables, bn_train)
