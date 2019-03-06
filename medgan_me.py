@@ -5,8 +5,45 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from tensorflow.contrib.layers import l2_regularizer
 from tensorflow.contrib.layers import batch_norm
+import tensorflow.contrib.eager as tfe
+tf.enable_eager_execution()
 
-_VALIDATION_RATIO = 0.1
+
+data = np.load(args.data_file)
+inputDim = data.shape[1]
+
+
+_VALIDATION_RATIO = 0.2
+h_dim = inputDim
+comressedDim = 128
+
+class AE(tf.keras.Model):
+    def __init__(self):
+        super(VAE, self).__init__()
+        self.fc1 = tf.keras.layers.Dense(comressedDim)
+        self.fc2 = tf.keras.layers.Dense(inputDim)
+
+    def encode(self, x):
+        h = tf.nn.tanh(self.fc1(x))
+        return self.fc2(h), self.fc3(h)
+
+    def reparameterize(self, mu, log_var):
+        std = tf.exp(log_var * 0.5)
+        eps = tf.random_normal(std.shape)
+        return mu + eps * std
+
+    def decode_logits(self, z):
+        h = tf.nn.relu(self.fc4(z))
+        return self.fc5(h)
+
+    def decode(self, z):
+        return tf.nn.sigmoid(self.decode_logits(z))
+
+    def call(self, inputs, training=None, mask=None):
+        mu, log_var = self.encode(inputs)
+        z = self.reparameterize(mu, log_var)
+        x_reconstructed_logits = self.decode_logits(z)
+        return x_reconstructed_logits, mu, log_var
 
 
 class Medgan(object):
@@ -46,7 +83,10 @@ class Medgan(object):
         if self.dataType == 'binary':
             data = np.clip(data, 0, 1)
 
-        trainX, validX = train_test_split(data, test_size=_VALIDATION_RATIO, random_state=0)
+        # Divide into train/test, validation
+        trainX, X_test = train_test_split(data, test_size=_VALIDATION_RATIO, random_state=1)
+        trainX, validX = train_test_split(trainX, test_size=_VALIDATION_RATIO, random_state=1)
+
         return trainX, validX
 
     def buildAutoencoder(self, x_input):
@@ -261,6 +301,9 @@ class Medgan(object):
         loss_d, loss_g, y_hat_real, y_hat_fake = self.buildDiscriminator(x_raw, x_fake, keep_prob, decodeVariables, bn_train)
         trainX, validX = self.loadData(dataPath)
 
+        train_dataset = tf.data.Dataset.from_tensor_slices(trainX).shuffle(trainX.shape[0]).batch(batchSize)
+        val_dataset = tf.data.Dataset.from_tensor_slices(validX).shuffle(validX.shape[0]).batch(batchSize)
+
         t_vars = tf.trainable_variables()
         ae_vars = [var for var in t_vars if 'autoencoder' in var.name]
         d_vars = [var for var in t_vars if 'discriminator' in var.name]
@@ -289,14 +332,14 @@ class Medgan(object):
                 for epoch in range(pretrainEpochs):
                     idx = np.random.permutation(trainX.shape[0])
                     trainLossVec = []
-                    for i in range(nTrainBatches):
-                        batchX = trainX[idx[i*pretrainBatchSize:(i+1)*pretrainBatchSize]]
+                    for batchX in tfe.Iterator(train_dataset):
+                        # batchX = trainX[idx[i*pretrainBatchSize:(i+1)*pretrainBatchSize]]
                         _, loss = sess.run([optimize_ae, loss_ae], feed_dict={x_raw:batchX})
                         trainLossVec.append(loss)
                     idx = np.random.permutation(validX.shape[0])
                     validLossVec = []
-                    for i in range(nValidBatches):
-                        batchX = validX[idx[i*pretrainBatchSize:(i+1)*pretrainBatchSize]]
+                    for batchX in tfe.Iterator(val_dataset):
+                        # batchX = validX[idx[i*pretrainBatchSize:(i+1)*pretrainBatchSize]]
                         loss = sess.run(loss_ae, feed_dict={x_raw:batchX})
                         validLossVec.append(loss)
                     validReverseLoss = 0.
@@ -305,46 +348,46 @@ class Medgan(object):
                     self.print2file(buf, logFile)
 
             idx = np.arange(trainX.shape[0])
-            for epoch in range(nEpochs):
-                d_loss_vec= []
-                g_loss_vec = []
-                for i in range(nBatches):
-                    for _ in range(discriminatorTrainPeriod):
-                        batchIdx = np.random.choice(idx, size=batchSize, replace=False)
-                        batchX = trainX[batchIdx]
-                        randomX = np.random.normal(size=(batchSize, self.randomDim))
-                        _, discLoss = sess.run([optimize_d, loss_d], feed_dict={x_raw:batchX, x_random:randomX, keep_prob:1.0, bn_train:False})
-                        d_loss_vec.append(discLoss)
-                    for _ in range(generatorTrainPeriod):
-                        randomX = np.random.normal(size=(batchSize, self.randomDim))
-                        _, generatorLoss = sess.run([optimize_g, loss_g], feed_dict={x_raw:batchX, x_random:randomX, keep_prob:1.0, bn_train:True})
-                        g_loss_vec.append(generatorLoss)
-
-                idx = np.arange(len(validX))
-                nValidBatches = int(np.ceil(float(len(validX)) / float(batchSize)))
-                validAccVec = []
-                validAucVec = []
-                for i in range(nBatches):
-                    batchIdx = np.random.choice(idx, size=batchSize, replace=False)
-                    batchX = validX[batchIdx]
-                    randomX = np.random.normal(size=(batchSize, self.randomDim))
-                    preds_real, preds_fake, = sess.run([y_hat_real, y_hat_fake], feed_dict={x_raw:batchX, x_random:randomX, keep_prob:1.0, bn_train:False})
-                    validAcc = self.calculateDiscAccuracy(preds_real, preds_fake)
-                    validAuc = self.calculateDiscAuc(preds_real, preds_fake)
-                    validAccVec.append(validAcc)
-                    validAucVec.append(validAuc)
-                buf = 'Epoch:%d, d_loss:%f, g_loss:%f, accuracy:%f, AUC:%f' % (epoch, np.mean(d_loss_vec), np.mean(g_loss_vec), np.mean(validAccVec), np.mean(validAucVec))
-                print(buf)
-                self.print2file(buf, logFile)
-
-                # Path checking
-                import os
-                try:
-                    os.stat(outPath)
-                except:
-                    os.mkdir(outPath)
-
-                savePath = saver.save(sess, outPath, global_step=epoch)
+            # for epoch in range(nEpochs):
+            #     d_loss_vec= []
+            #     g_loss_vec = []
+            #     for i in range(nBatches):
+            #         for _ in range(discriminatorTrainPeriod):
+            #             batchIdx = np.random.choice(idx, size=batchSize, replace=False)
+            #             batchX = trainX[batchIdx]
+            #             randomX = np.random.normal(size=(batchSize, self.randomDim))
+            #             _, discLoss = sess.run([optimize_d, loss_d], feed_dict={x_raw:batchX, x_random:randomX, keep_prob:1.0, bn_train:False})
+            #             d_loss_vec.append(discLoss)
+            #         for _ in range(generatorTrainPeriod):
+            #             randomX = np.random.normal(size=(batchSize, self.randomDim))
+            #             _, generatorLoss = sess.run([optimize_g, loss_g], feed_dict={x_raw:batchX, x_random:randomX, keep_prob:1.0, bn_train:True})
+            #             g_loss_vec.append(generatorLoss)
+            #
+            #     idx = np.arange(len(validX))
+            #     nValidBatches = int(np.ceil(float(len(validX)) / float(batchSize)))
+            #     validAccVec = []
+            #     validAucVec = []
+            #     for i in range(nBatches):
+            #         batchIdx = np.random.choice(idx, size=batchSize, replace=False)
+            #         batchX = validX[batchIdx]
+            #         randomX = np.random.normal(size=(batchSize, self.randomDim))
+            #         preds_real, preds_fake, = sess.run([y_hat_real, y_hat_fake], feed_dict={x_raw:batchX, x_random:randomX, keep_prob:1.0, bn_train:False})
+            #         validAcc = self.calculateDiscAccuracy(preds_real, preds_fake)
+            #         validAuc = self.calculateDiscAuc(preds_real, preds_fake)
+            #         validAccVec.append(validAcc)
+            #         validAucVec.append(validAuc)
+            #     buf = 'Epoch:%d, d_loss:%f, g_loss:%f, accuracy:%f, AUC:%f' % (epoch, np.mean(d_loss_vec), np.mean(g_loss_vec), np.mean(validAccVec), np.mean(validAucVec))
+            #     print(buf)
+            #     self.print2file(buf, logFile)
+            #
+            #     # Path checking
+            #     import os
+            #     try:
+            #         os.stat(outPath)
+            #     except:
+            #         os.mkdir(outPath)
+            #
+            #     savePath = saver.save(sess, outPath, global_step=epoch)
         print(savePath)
 
 def str2bool(v):
